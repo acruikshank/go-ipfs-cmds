@@ -68,24 +68,40 @@ var ErrIncorrectType = errors.New("The command returned a value with a different
 
 // Call invokes the command for the given Request
 func (c *Command) Call(req *Request, re ResponseEmitter, env Environment) {
-	// we need the named return parameter so we can change the value from defer()
-	defer re.Close()
+	var err error
+
+	defer func() {
+		var closeErr error
+		if err == nil {
+			closeErr = re.Close()
+		} else {
+			if _, ok := err.(cmdkit.Error); !ok {
+				err = cmdkit.Error{Message: err.Error(), Code: cmdkit.ErrFatal}
+			}
+
+			closeErr = re.CloseWithError(err)
+		}
+
+		if closeErr != nil {
+			log.Errorf("error closing connection: %s", closeErr)
+			if err != nil {
+				log.Errorf("close caused by error: %s", err)
+			}
+		}
+	}()
 
 	var cmd *Command
-	cmd, err := c.Get(req.Path)
+	cmd, err = c.Get(req.Path)
 	if err != nil {
-		re.SetError(err, cmdkit.ErrFatal)
 		return
 	}
 
 	if cmd.Run == nil {
-		re.SetError(ErrNotCallable, cmdkit.ErrFatal)
 		return
 	}
 
 	err = cmd.CheckArguments(req)
 	if err != nil {
-		re.SetError(err, cmdkit.ErrFatal)
 		return
 	}
 
@@ -105,14 +121,8 @@ func (c *Command) Call(req *Request, re ResponseEmitter, env Environment) {
 	}
 
 	err = cmd.Run(req, re, env)
-	if err != nil {
-		if cmderr, ok := err.(cmdkit.Error); ok {
-			err = re.Emit(cmderr)
-			if err != nil {
-				log.Error("error emitting cmd error:", err)
-			}
-		}
-		re.SetError(err, cmdkit.ErrNormal)
+	if _, ok := err.(*cmdkit.Error); err != nil && !ok {
+		err = &cmdkit.Error{Message: err.Error(), Code: cmdkit.ErrNormal}
 	}
 }
 
